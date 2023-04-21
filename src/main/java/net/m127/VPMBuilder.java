@@ -7,6 +7,7 @@ import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTag;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
+import org.eclipse.jgit.treewalk.filter.PathFilter;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
@@ -17,6 +18,7 @@ import java.nio.file.Path;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Properties;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -29,6 +31,7 @@ import java.util.zip.ZipOutputStream;
 public class VPMBuilder {
     private static final Predicate<String> PACKAGE_JSON = Pattern.compile("/?package\\.json", Pattern.CASE_INSENSITIVE).asMatchPredicate();
     private static final Pattern TAG_NAME_FMT = Pattern.compile("^(?<pkg>\\w++(?:\\.\\w++)*+)#(?<vrsn>\\d++(?:\\.\\d++)*+)$");
+    private static final HexFormat HEX = HexFormat.of();
     
     public static void main(String[] args) {
         Properties props = new Properties();
@@ -91,8 +94,12 @@ public class VPMBuilder {
                 final RevCommit commit = revWalk.parseCommit(tag.getObject());
                 final String pkg = m.group("pkg");
                 final String version = m.group("vrsn");
-                JSONObject packageJson = buildZip(commit, pkg, version);
-                path(packages, pkg, "versions").put(version, packageJson);
+                try {
+                    JSONObject packageJson = buildZip(commit, pkg, version);
+                    path(packages, pkg, "versions").put(version, packageJson);
+                } catch(IOException ex) {
+                    ex.printStackTrace();
+                }
             }
         } catch(NoSuchAlgorithmException ignored) {}
         try(BufferedWriter out = Files.newBufferedWriter(buildDir.resolve("index.json"))) {
@@ -103,6 +110,7 @@ public class VPMBuilder {
     private JSONObject buildZip(RevCommit commit, String pkg, String version) throws IOException, NoSuchAlgorithmException {
         final String zipPath = pkg+"/"+pkg+"_"+version+".zip";
         final Path savePath = buildDir.resolve(zipPath);
+        if(!Files.isDirectory(savePath.getParent())) Files.createDirectory(savePath.getParent());
         final MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
         JSONObject packageJson;
         try(
@@ -110,6 +118,7 @@ public class VPMBuilder {
             TreeWalk walk = new TreeWalk(repo);
         ) {
             walk.addTree(commit.getTree());
+            walk.setFilter(PathFilter.create(pkg));
             if(!walk.next()) {
                 throw new FileNotFoundException(String.format("'%s' does not exist for tag '%s#%s'", pkg, pkg, version));
             }
@@ -119,7 +128,7 @@ public class VPMBuilder {
             Files.delete(savePath);
             throw new FileNotFoundException(String.format("package.json does not exist for version %s of %s", version, pkg));
         }
-        packageJson.put("zipSHA256", sha256.digest());
+        packageJson.put("zipSHA256", HEX.formatHex(sha256.digest()));
         return packageJson;
     }
     
@@ -131,7 +140,7 @@ public class VPMBuilder {
     
     private JSONObject zipContents(TreeWalk walk, String prefix, ZipOutputStream out, UnaryOperator<JSONObject> packageJsonModifier) throws IOException {
         walk.enterSubtree();
-        walk.next();
+        if(!walk.next()) return null;
         final int depth = walk.getDepth();
         JSONObject packageJson = null;
         while(walk.getDepth() == depth) {
