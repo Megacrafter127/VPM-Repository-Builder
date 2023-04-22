@@ -2,6 +2,7 @@ package net.m127;
 
 import lombok.RequiredArgsConstructor;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.*;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTag;
@@ -13,13 +14,11 @@ import org.json.JSONTokener;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-import java.util.Properties;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -29,32 +28,58 @@ import java.util.zip.ZipOutputStream;
 
 @RequiredArgsConstructor
 public class VPMBuilder {
-    private static final Predicate<String> PACKAGE_JSON = Pattern.compile("/?package\\.json", Pattern.CASE_INSENSITIVE).asMatchPredicate();
+    private static final Predicate<String> PACKAGE_JSON = Pattern.compile("^/?package\\.json$", Pattern.CASE_INSENSITIVE).asPredicate();
     private static final Pattern TAG_NAME_FMT = Pattern.compile("^(?<pkg>\\w++(?:\\.\\w++)*+)#(?<vrsn>\\d++(?:\\.\\d++)*+)$");
-    private static final HexFormat HEX = HexFormat.of();
-    
-    public static void main(String[] args) {
-        Properties props = new Properties();
-        try(BufferedReader in = Files.newBufferedReader(Path.of(args.length == 0 ? "repository.properties" : args[0]))) {
-            props.load(in);
-        } catch(IOException ignored) {}
-        
-        final File gd = new File(props.getProperty("gitRepository", "."));
-        try(
-            Git git = Git.open(gd);
-            Repository repo = git.getRepository();
-        ) {
-            VPMBuilder vpmBuilder = new VPMBuilder(
-                repo,
-                gd.toPath().resolve(props.getProperty("buildPath", "dist")),
-                props.getProperty("baseURL", "http://localhost/"),
-                props.getProperty("repositoryName", "VPM Repository"),
-                props.getProperty("repositoryId", ""),
-                props.getProperty("repositoryAuthor", "unspecified")
-            );
-            vpmBuilder.build();
-        } catch(IOException ex) {
-            ex.printStackTrace();
+    private static final char[] HEXCHARS = "0123456789abcdef".toCharArray();
+    private static String toHex(byte[] bytes) {
+        char[] chars = new char[bytes.length<<1];
+        for(int i=0,j=0;i< bytes.length;i++,j+=2) {
+            chars[j] = HEXCHARS[bytes[i] & 0xF];
+            chars[j+1] = HEXCHARS[(bytes[i] >> 4) & 0xF];
+        }
+        return String.valueOf(chars);
+    }
+    private static final FileVisitor<Path> DELETE_DIRECTORY = new SimpleFileVisitor<Path>() {
+        @Override
+        public FileVisitResult visitFile(Path path, BasicFileAttributes basicFileAttributes) throws IOException {
+            Files.delete(path);
+            return FileVisitResult.CONTINUE;
+        }
+        @Override
+        public FileVisitResult postVisitDirectory(Path path, IOException e) throws IOException {
+            if(e == null) {
+                Files.delete(path);
+                return FileVisitResult.CONTINUE;
+            } else throw e;
+        }
+    };
+    public static void main(String[] args) throws IOException {
+        final Config config;
+        try(BufferedReader in = Files.newBufferedReader(Paths.get(args.length == 0 ? "config.json" : args[0]))) {
+            config = new Config(new JSONObject(new JSONTokener(in)));
+        }
+        Files.createDirectories(config.buildFolder);
+        final JSONObject vpmRepo = new JSONObject();
+        vpmRepo.put("name", config.repositoryName);
+        vpmRepo.put("id", config.repositoryId);
+        vpmRepo.put("url", config.baseURL+"index.json");
+        vpmRepo.put("author", config.repositoryAuthor);
+        final JSONObject packages = path(vpmRepo, "packages");
+        for(Config.SourceRepository src: config.sources) {
+            Path gitDir = Files.createTempDirectory(src.cloneURL.replaceAll("[^/]*+/", ""));
+            try(
+                Git git = Git.cloneRepository().setURI(src.cloneURL).setBare(true).setGitDir(gitDir.toFile()).call();
+                Repository repo = git.getRepository();
+            ) {
+                VPMBuilder vpmBuilder = new VPMBuilder(repo, config.baseURL, config.buildFolder);
+                vpmBuilder.build(packages);
+            } catch(IOException | GitAPIException ex) {
+                ex.printStackTrace();
+            }
+            Files.walkFileTree(gitDir, DELETE_DIRECTORY);
+        }
+        try(BufferedWriter out = Files.newBufferedWriter(config.buildFolder.resolve("index.json"))) {
+            vpmRepo.write(out, 2, 0);
         }
     }
     
@@ -71,20 +96,10 @@ public class VPMBuilder {
     }
     
     private final Repository repo;
-    private final Path buildDir;
     private final String baseURL;
-    private final String repoName;
-    private final String repoId;
-    private final String repoAuthor;
+    private final Path buildDir;
     
-    public void build() throws IOException {
-        Files.createDirectories(buildDir);
-        final JSONObject vpmRepo = new JSONObject();
-        vpmRepo.put("name", repoName);
-        vpmRepo.put("id", repoId);
-        vpmRepo.put("url", baseURL+"index.json");
-        vpmRepo.put("author", repoAuthor);
-        final JSONObject packages = path(vpmRepo, "packages");
+    public void build(JSONObject packages) throws IOException {
         try(RevWalk revWalk = new RevWalk(repo)) {
             final RefDatabase refs = repo.getRefDatabase();
             for(Ref ref : refs.getRefsByPrefix(Constants.R_TAGS)) {
@@ -102,9 +117,6 @@ public class VPMBuilder {
                 }
             }
         } catch(NoSuchAlgorithmException ignored) {}
-        try(BufferedWriter out = Files.newBufferedWriter(buildDir.resolve("index.json"))) {
-            vpmRepo.write(out, 2, 0);
-        }
     }
     
     private JSONObject buildZip(RevCommit commit, String pkg, String version) throws IOException, NoSuchAlgorithmException {
@@ -128,7 +140,7 @@ public class VPMBuilder {
             Files.delete(savePath);
             throw new FileNotFoundException(String.format("package.json does not exist for version %s of %s", version, pkg));
         }
-        packageJson.put("zipSHA256", HEX.formatHex(sha256.digest()));
+        packageJson.put("zipSHA256", toHex(sha256.digest()));
         return packageJson;
     }
     
