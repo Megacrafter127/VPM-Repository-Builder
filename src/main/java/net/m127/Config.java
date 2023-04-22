@@ -8,28 +8,26 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.ListIterator;
 import java.util.regex.Pattern;
 
 public class Config {
     public static class SourceRepository {
         private static final String CLONE_URL = "cloneURL";
         private static final String TAG_PATTERN = "tagPattern";
+        private static final String PKG = "package";
+        private static final String VERSION = "version";
         private static final String PATH = "path";
         public final String cloneURL;
         public final Pattern tagPattern;
+        public final String pkg;
+        public final String version;
         public final String path;
         public SourceRepository(JSONObject json) {
             this.cloneURL = json.getString(CLONE_URL);
             this.tagPattern = Pattern.compile(json.optString(TAG_PATTERN, "^(?<pkg>\\w++(?:\\.\\w++)*+)#(?<version>\\d++(?:\\.\\d++)*+)$"));
+            this.pkg = json.optString(PKG, "${pkg}");
+            this.version = json.optString(VERSION, "${version}");
             this.path = json.optString(PATH, "${pkg}");
-        }
-        public JSONObject toJSON() {
-            JSONObject json = new JSONObject();
-            json.put(CLONE_URL, this.cloneURL);
-            json.put(TAG_PATTERN, this.tagPattern);
-            json.put(PATH, this.path);
-            return json;
         }
     }
     private static final String ID = "repositoryId";
@@ -56,19 +54,5 @@ public class Config {
             list.add(new SourceRepository(array.getJSONObject(i)));
         }
         this.sources = Collections.unmodifiableList(list);
-    }
-    public JSONObject toJSON() {
-        JSONObject json = new JSONObject();
-        json.put(ID, this.repositoryId);
-        json.put(NAME, this.repositoryName);
-        json.put(AUTHOR, this.repositoryAuthor);
-        json.put(URL, this.baseURL);
-        json.put(BUILDDIR, this.buildFolder);
-        JSONArray array = new JSONArray(sources.size());
-        ListIterator<SourceRepository> iterator = sources.listIterator();
-        while(iterator.hasNext()) {
-            array.put(iterator.nextIndex(), iterator.next().toJSON());
-        }
-        return json;
     }
 }
