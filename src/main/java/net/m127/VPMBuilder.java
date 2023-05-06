@@ -177,7 +177,7 @@ public class VPMBuilder {
                 
                 Map<String, PackageJSON> versions = packages.computeIfAbsent(pkg, VersionJSON::newEmpty).getVersions();
                 if(versions.containsKey(version)) log.atWarn().log("Duplicate version for '{}': {}", pkg, version);
-                final String zipPath = pkg + "/" + pkg + "_" + version + ".zip";
+                final String zipPath = "packages/" + pkg + "/" + pkg + "_" + version + ".zip";
                 packageJSON.setUrl(baseURL + zipPath);
                 final Path savePath = buildDir.resolve(zipPath);
                 log.atInfo().log("Found tag for version {} of '{}'", version, pkg);
@@ -228,7 +228,7 @@ public class VPMBuilder {
         Path savePath,
         PackageJSON packageJSON
     ) throws IOException, NoSuchAlgorithmException {
-        if(!Files.isDirectory(savePath.getParent())) Files.createDirectory(savePath.getParent());
+        if(!Files.isDirectory(savePath.getParent())) Files.createDirectories(savePath.getParent());
         final MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
         try(
             ZipOutputStream out = new ZipOutputStream(new DigestOutputStream(Files.newOutputStream(savePath), sha256));
