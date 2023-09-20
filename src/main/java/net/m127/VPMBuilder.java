@@ -102,7 +102,7 @@ public class VPMBuilder {
                 );
                 vpmBuilder.build(vpmRepo.getPackages());
             } catch(IOException | GitAPIException ex) {
-                ex.printStackTrace();
+                log.atError().withThrowable(ex).log("Unexpected error while building {}", src);
             }
             Files.walkFileTree(gitDir, DELETE_DIRECTORY);
         }
