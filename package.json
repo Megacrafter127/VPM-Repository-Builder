@@ -1,0 +1,19 @@
+{
+  "name": "vpm-builder",
+  "scripts": {
+    "start": "tsc && rm -r dist/ && node build/index.js"
+  },
+  "type": "module",
+  "dependencies": {
+    "adm-zip": "^0.5.10",
+    "@es-git/memory-repo": "^0.10.0",
+    "@es-git/fetch-mixin": "^0.10.0",
+    "@es-git/load-as-mixin": "^0.10.0",
+    "@es-git/walkers-mixin": "^0.10.0",
+    "typescript": "^5.0.4"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.4",
+    "@tsconfig/node20": "^1.0.0"
+  }
+}
