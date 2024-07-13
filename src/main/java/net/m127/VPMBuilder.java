@@ -17,8 +17,10 @@ import org.apache.logging.log4j.LogBuilder;
 import org.apache.logging.log4j.core.config.Configurator;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.lib.*;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevObject;
 import org.eclipse.jgit.revwalk.RevTag;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
@@ -121,11 +123,11 @@ public class VPMBuilder {
         try(RevWalk revWalk = new RevWalk(repo)) {
             final RefDatabase refs = repo.getRefDatabase();
             for(Ref ref : refs.getRefsByPrefix(Constants.R_TAGS)) {
-                final RevTag tag = revWalk.parseTag(ref.getObjectId());
-                final Matcher m = config.getTagPattern().matcher(tag.getTagName());
+                final String tagName = ref.getName().substring(Constants.R_TAGS.length());
+                final Matcher m = config.getTagPattern().matcher(tagName);
                 if(!m.find()) continue;
+                final RevCommit commit = resolveTagCommit(revWalk, ref);
                 final String subPath = m.replaceFirst(config.getPath());
-                final RevCommit commit = revWalk.parseCommit(tag.getObject());
                 final String pkg = m.replaceFirst(config.getPkg());
                 final String version = m.replaceFirst(config.getVersion());
                 PackageJSON packageJSON;
@@ -134,7 +136,7 @@ public class VPMBuilder {
                     treeWalk.setFilter(PathFilter.create(subPath + "/package.json"));
                     treeWalk.setRecursive(true);
                     if(!treeWalk.next()) {
-                        log.atError().log("package.json missing at tag {}", tag.getTagName());
+                        log.atError().log("package.json missing at tag {}", tagName);
                         continue;
                     }
                     packageJSON = MAPPER.readValue(
@@ -150,7 +152,7 @@ public class VPMBuilder {
                         packageJSON::getName,
                         log -> log.log(
                             "Package name mismatch at tag {}\nExpected: {}\nActual: {}",
-                            tag.getTagName(),
+                            tagName,
                             pkg,
                             packageJSON.getName()
                         ),
@@ -163,7 +165,7 @@ public class VPMBuilder {
                         packageJSON::getVersion,
                         log -> log.log(
                             "Version mismatch at tag {}\nExpected: {}\nActual: {}",
-                            tag.getTagName(),
+                            tagName,
                             version,
                             packageJSON.getVersion()
                         ),
@@ -191,6 +193,15 @@ public class VPMBuilder {
             }
         } catch(NoSuchAlgorithmException ignored) {
         }
+    }
+    
+    private RevCommit resolveTagCommit(RevWalk revWalk, Ref ref) throws IOException {
+        RevObject revObject = revWalk.parseAny(ref.getObjectId());
+        if(revObject instanceof RevCommit) {
+            return (RevCommit) revObject;
+        } else if(revObject instanceof RevTag) {
+            return revWalk.parseCommit(((RevTag)revObject).getObject());
+        } else throw new IncorrectObjectTypeException(revObject.getId(), Constants.TYPE_TAG);
     }
     
     private <T, E extends Throwable, R extends Throwable> void handleMismatch(
