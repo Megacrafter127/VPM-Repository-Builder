@@ -133,7 +133,7 @@ public class VPMBuilder {
                 PackageJSON packageJSON;
                 try(TreeWalk treeWalk = new TreeWalk(repo)) {
                     treeWalk.addTree(commit.getTree());
-                    treeWalk.setFilter(PathFilter.create(subPath + "/package.json"));
+                    treeWalk.setFilter(PathFilter.create(subPath.isEmpty() ? "package.json" : (subPath + "/package.json")));
                     treeWalk.setRecursive(true);
                     if(!treeWalk.next()) {
                         log.atError().log("package.json missing at tag {}", tagName);
@@ -246,7 +246,7 @@ public class VPMBuilder {
             TreeWalk walk = new TreeWalk(repo);
         ) {
             walk.addTree(commit.getTree());
-            walk.setFilter(PathFilter.create(subPath));
+            if(!subPath.isEmpty()) walk.setFilter(PathFilter.create(subPath));
             if(!walk.next()) {
                 throw new FileNotFoundException();
             }
