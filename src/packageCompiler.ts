@@ -1,5 +1,5 @@
 import {createHash} from "node:crypto";
-import {mkdir, writeFile} from "node:fs/promises";
+import {writeFile} from "node:fs/promises";
 import AdmZip from "adm-zip";
 import {Hash, mix, Type} from "@es-git/core";
 import MemoryRepo from "@es-git/memory-repo";
@@ -7,8 +7,18 @@ import {CommitBody, default as objectMixin} from "@es-git/object-mixin";
 import walkersMixing from "@es-git/walkers-mixin";
 import loadAsMixin from "@es-git/load-as-mixin";
 import fetchMixin from "@es-git/fetch-mixin";
-import {buildConfig, packageSources} from './vpmrepoconfig.js';
-import {packageJson, packageList} from './vpmPackageJson.js';
+import {errorHandlingSpec, errorType, sourceRepository} from './vpmrepoconfig.js';
+import {packageJson} from './vpmPackageJson.js';
+
+export class BuildError extends Error {
+  constructor(
+    public readonly type: errorType,
+    message: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+  }
+}
 
 class Repo extends mix(MemoryRepo.default)
   .with(objectMixin.default)
@@ -18,90 +28,187 @@ class Repo extends mix(MemoryRepo.default)
 
   async getCommit(hash: Hash): Promise<CommitBody> {
     const obj = await super.loadObject(hash);
-    if (!obj) throw new Error("Object missing");
+    if (!obj) throw new BuildError("io", "Object missing");
     switch (obj.type) {
       case Type.commit:
         return obj.body;
       case Type.tag:
         return await this.getCommit(obj.body.object);
       default:
-        throw new Error("Bad object type");
+        throw new BuildError("io", `Bad object type: ${obj.type}`);
     }
   }
 
   async getSubtreeHash(tree: Hash, ...path: string[]): Promise<Hash> {
     for (const p of path) {
       const subTree = (await this.loadTree(tree))[p]?.hash;
-      if (!subTree) throw new Error(`Subtree '${path.join("/")}' does not exist`);
+      if (!subTree) throw new BuildError("badPath", `Subtree '${path.join("/")}' does not exist`);
       tree = subTree;
     }
     return tree;
   }
 }
 
-async function buildSingleVersionFromSource(repo: Repo, version: string, url: string, outPath: string, inPath: string, subTree: Hash): Promise<packageJson> {
-  const archive = new AdmZip();
+type buildVersionArgs = {
+  errorHandling: errorHandlingSpec,
+  packagesBaseURL: string,
+  packagesBuildFolder: string,
+  repo: Repo,
+  tree: Hash,
+  commit: Hash,
+  packageName: string,
+  version: string,
+};
+
+async function buildVersion(
+  {
+    errorHandling,
+    packagesBaseURL,
+    packagesBuildFolder,
+    repo,
+    tree,
+    commit,
+    packageName,
+    version
+  }: buildVersionArgs
+): Promise<packageJson> {
+  const zip = new AdmZip();
   let pjp: string | undefined = undefined;
-  for await(const file of repo.listFiles(subTree)) {
+  for await (const file of repo.listFiles(tree)) {
     const path = file.path.join("/");
     const buff = Buffer.from(await repo.loadBlob(file.hash));
     if (/^package\.json$/i.test(path)) {
-      pjp = buff.toString("utf8");
+      pjp = buff.toString('utf8');
     } else {
-      archive.addFile(path, buff);
+      zip.addFile(path, buff);
     }
   }
-  if (!pjp) {
-    throw new Error(`Missing package.json in '${inPath}'`);
-  }
+  if (!pjp) throw new BuildError("badPath", "package.json is missing");
   const packageJson: packageJson = JSON.parse(pjp);
-  packageJson.url = url;
-  packageJson.version = version;
-  archive.addFile("package.json", Buffer.from(JSON.stringify(packageJson), "utf8"));
-  const buff = await archive.toBufferPromise();
-  packageJson.zipSHA256 = createHash("sha256").update(buff).digest('hex');
-  await writeFile(outPath, buff);
-  return packageJson
+  if ((packageJson.name ??= packageName) !== packageName) {
+    const msg = `Commit ${commit}: Package Name Mismatch: '${packageJson.name}' (from package.json) is not '${packageName}' (from config)`;
+    // noinspection FallThroughInSwitchStatementJS
+    switch (errorHandling.packageMismatch) {
+      case "warn_keep":
+        console.log(msg);
+      case "ignore_keep":
+        break;
+      case "warn_replace":
+        console.log(msg);
+      case "ignore_replace":
+        packageJson.name = packageName;
+        break;
+      default:
+        throw new BuildError("packageMismatch", msg);
+    }
+  }
+  if ((packageJson.version ??= version) !== version) {
+    const msg = `Package: ${packageJson.name}, Commit ${commit}: Package Version Mismatch: '${packageJson.version}' (from package.json) is not '${version}' (from config)`;
+    // noinspection FallThroughInSwitchStatementJS
+    switch (errorHandling.versionMismatch) {
+      case "warn_keep":
+        console.log(msg);
+      case "ignore_keep":
+        break;
+      case "warn_replace":
+        console.log(msg);
+      case "ignore_replace":
+        packageJson.version = version;
+        break;
+      default:
+        throw new BuildError("versionMismatch", msg);
+    }
+  }
+  const fileName = `${packageJson.name}_${packageJson.version}_${commit}.zip`
+  packageJson.url = `${packagesBaseURL}/${fileName}`;
+  delete packageJson.zipSHA256;
+  zip.addFile("package.json", Buffer.from(JSON.stringify(packageJson), 'utf8'));
+  const buff = await zip.toBufferPromise();
+  packageJson.zipSHA256 = createHash('sha256').update(buff).digest('hex');
+  await writeFile(`${packagesBuildFolder}/${fileName}`, buff);
+  return packageJson;
 }
 
-async function buildSinglePackageFromSource(repo: Repo, baseURL: string, packageFolder: string, packageName: string, tags: {
-  name: string,
-  commit: CommitBody
-}[], tagRegex: RegExp, versionString: string, inPath: string): Promise<Record<string, packageJson>> {
-  const pathPrefix = inPath.split("/").filter(s => s);
-  const buildResults = await Promise.all(tags.flatMap(tag => {
-    if (!tagRegex.test(tag.name)) return [];
-    const version = tag.name.replace(tagRegex, versionString);
-    const zipPath = `${packageName}_${version}.zip`;
-    return repo.getSubtreeHash(tag.commit.tree, ...pathPrefix)
-      .then(subTree => buildSingleVersionFromSource(repo, version, `${baseURL}/${zipPath}`, `${packageFolder}/${zipPath}`, inPath, subTree))
-      .catch(err => {
-        throw new Error(`Error while building ${version} of ${packageName}`, {
-          cause: err
-        });
-      });
-  }));
-  return Object.fromEntries(buildResults.map(packageJson => [packageJson.version, packageJson] as const));
-}
-
-export async function buildFromSource(remoteURL: string, config: buildConfig, packages: packageSources): Promise<packageList> {
-  const packageFolder = `${config.buildFolder ?? "./dist"}/packages`;
-  await mkdir(packageFolder, {recursive: true});
+export async function buildSource(errorHandling: errorHandlingSpec, source: sourceRepository, packagesBaseURL: string, packagesBuildFolder: string): Promise<packageJson[]> {
   const repo = new Repo();
-  const refs = await repo.fetch(remoteURL, "refs/tags/*:refs/tags/*");
-  const tags = await Promise.all(refs.flatMap(ref => {
-    const tagName = /^refs\/tags\/(?<tag>.*)$/.exec(ref.name ?? "")?.groups?.["tag"];
-    if (!tagName || tagName.endsWith("^{}")) return [];
-    return repo.getCommit(ref.hash).then(commit => ({
+  const tags = (await repo.fetch(source.cloneURL, "refs/tags/*:refs/tags/*")).flatMap(ref => {
+    if (!ref.name?.startsWith("refs/tags/")) return [];
+    const tagName = ref.name.substring(10);
+    if (tagName.endsWith("^{}")) return [];
+    return {
       name: tagName,
-      commit,
+      hash: ref.hash,
+    };
+  });
+  if ("tagPattern" in source) {
+    const rgx = new RegExp(source.tagPattern);
+    const ret = await Promise.all(tags.filter(tag => rgx.test(tag.name)).map(async tag => {
+      const packageName = tag.name.replace(rgx, source.package);
+      const version = tag.name.replace(rgx, source.version);
+      const subPath = tag.name.replace(rgx, source.path).split("/").filter(f => f);
+      const commit = await repo.getCommit(tag.hash);
+      const tree = await repo.getSubtreeHash(commit.tree, ...subPath);
+      try {
+        return await buildVersion({
+          errorHandling,
+          packagesBaseURL,
+          packagesBuildFolder,
+          repo,
+          tree,
+          commit: tag.hash,
+          packageName,
+          version
+        });
+      } catch (err) {
+        if (err instanceof BuildError) {
+          switch (errorHandling[err.type]) {
+            case "critical":
+              throw err;
+            default:
+              console.log(err);
+          }
+        } else throw new BuildError("io", ``, {
+          cause: err,
+        });
+      }
     }));
-  }));
-  return Object.fromEntries<{
-    versions: Record<string, packageJson>
-  }>(await Promise.all(Object.entries(packages).map(async ([pkg, src]) => {
-    return [pkg, {
-      versions: await buildSinglePackageFromSource(repo, `${config.baseURL}/packages`, packageFolder, pkg, tags, new RegExp(src.tagPattern), src.version, src.path),
-    }] as const;
-  })));
+    return ret.filter(p => p) as packageJson[];
+  } else {
+    const ret = await Promise.all(Object.entries(source.packages).flatMap(([packageName, info]) => {
+      const rgx = new RegExp(info.tagPattern);
+      const errHandling = {
+        ...errorHandling,
+        ...(info.onError ?? {})
+      };
+      return tags.flatMap(tag => {
+        if (!rgx.test(tag.name)) return [];
+        const version = tag.name.replace(rgx, info.version);
+        const subPath = tag.name.replace(rgx, info.path).split("/").filter(f => f);
+        return repo.getCommit(tag.hash).then(commit => repo.getSubtreeHash(commit.tree, ...subPath)
+          .then(tree => buildVersion({
+            errorHandling: errHandling,
+            packagesBaseURL,
+            packagesBuildFolder,
+            repo,
+            tree,
+            commit: tag.hash,
+            packageName,
+            version
+          }).catch(err => {
+            if (err instanceof BuildError) {
+              switch (errHandling[err.type]) {
+                case "critical":
+                  throw err;
+                default:
+                  console.log(err);
+              }
+            } else throw new BuildError("io", ``, {
+              cause: err,
+            });
+          }))
+        );
+      })
+    }));
+    return ret.filter(p => p) as packageJson[];
+  }
 }
