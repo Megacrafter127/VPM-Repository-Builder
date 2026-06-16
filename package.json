@@ -10,7 +10,7 @@
     "@es-git/fetch-mixin": "^0.10.0",
     "@es-git/load-as-mixin": "^0.10.0",
     "@es-git/walkers-mixin": "^0.10.0",
-    "typescript": "^5.0.4"
+    "typescript": "^5.4.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.4",
