@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { buildSource, BuildError } from "./packageCompiler.js";
+import {mkdir, readFile, writeFile} from "node:fs/promises";
+import {buildSource, BuildError} from "./packageCompiler.js";
 import {errorHandlingSpec, vpmRepositoryConfig} from "./vpmrepoconfig.js";
 import {packageList, repoJson} from './vpmPackageJson.js';
 
@@ -10,9 +10,9 @@ const baseErrorHandling: errorHandlingSpec = {
   versionMismatch: "error",
 };
 
-const configJson = await readFile(process.argv[2] ?? "./vpmrepoconfig.json", { encoding: "utf-8"});
+const configJson = await readFile(process.argv[2] ?? "./vpmrepoconfig.json", {encoding: "utf-8"});
 
-const repoConfig: vpmRepositoryConfig  = JSON.parse(configJson);
+const repoConfig: vpmRepositoryConfig = JSON.parse(configJson);
 
 const errorHandling = {
   ...baseErrorHandling,
@@ -31,7 +31,7 @@ const packages = await Promise.all(repoConfig.sources.map(s => buildSource(
   `${repoConfig.baseURL}/packages`,
   packageBuildFolder
 ).catch(err => {
-  if(err instanceof BuildError) {
+  if (err instanceof BuildError) {
     switch (errorHandling[err.type]) {
       case "error":
         return undefined;
@@ -47,7 +47,7 @@ const indexJson: repoJson = {
   author: repoConfig.author,
   url: `${repoConfig.baseURL}/index.json`,
   packages: packages.flat().reduce<packageList>((a, v) => {
-    if(v) {
+    if (v) {
       const versions = (a[v.name] ??= {versions: {}})?.versions;
       versions[v.version] = v;
     }

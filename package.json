@@ -5,7 +5,7 @@
   },
   "type": "module",
   "dependencies": {
-    "adm-zip": "^0.5.10",
+    "adm-zip": "^0.6.0",
     "@es-git/memory-repo": "^0.10.0",
     "@es-git/fetch-mixin": "^0.10.0",
     "@es-git/load-as-mixin": "^0.10.0",
@@ -13,7 +13,7 @@
     "typescript": "^5.4.0"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.4",
+    "@types/node": "^20.0.0",
     "@tsconfig/node20": "^1.0.0"
   }
 }
