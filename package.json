@@ -1,7 +1,7 @@
 {
   "name": "vpm-builder",
   "scripts": {
-    "start": "tsc && rm -r dist/ && node build/index.js"
+    "start": "tsc && rm -rf dist/ && node build/index.js"
   },
   "type": "module",
   "dependencies": {
