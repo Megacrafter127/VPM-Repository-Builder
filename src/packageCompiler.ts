@@ -1,5 +1,5 @@
 import {createHash} from "node:crypto";
-import {writeFile} from "node:fs/promises";
+import {mkdir, writeFile} from "node:fs/promises";
 import AdmZip from "adm-zip";
 import {Hash, mix, Type} from "@es-git/core";
 import MemoryRepo from "@es-git/memory-repo";
@@ -120,12 +120,15 @@ async function buildVersion(
     }
   }
   const fileName = `${packageJson.name}_${packageJson.version}_${commit}.zip`
-  packageJson.url = `${packagesBaseURL}/${fileName}`;
+  packageJson.url = `${packagesBaseURL}/${packageJson.name}/${fileName}`;
   delete packageJson.zipSHA256;
   zip.addFile("package.json", Buffer.from(JSON.stringify(packageJson), 'utf8'));
   const buff = await zip.toBufferPromise();
   packageJson.zipSHA256 = createHash('sha256').update(buff).digest('hex');
-  await writeFile(`${packagesBuildFolder}/${fileName}`, buff);
+  await mkdir(`${packagesBuildFolder}/${packageJson.name}`, {
+    recursive: true,
+  });
+  await writeFile(`${packagesBuildFolder}/${packageJson.name}/${fileName}`, buff);
   return packageJson;
 }
 
